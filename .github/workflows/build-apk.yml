@@ -1,3 +1,4 @@
+
 name: Build Improve APK
 
 on:
@@ -6,40 +7,69 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   build:
+    name: Build Android APK
     runs-on: ubuntu-latest
 
     steps:
+      # 1. Download project files
       - name: Checkout project
         uses: actions/checkout@v4
 
+      # 2. Verify Flutter project
+      - name: Check project files
+        run: |
+          if [ ! -f pubspec.yaml ]; then
+            echo "ERROR: pubspec.yaml not found in repository root."
+            exit 1
+          fi
+
+      # 3. Install Java
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
+      # 4. Install Flutter
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
+          cache: true
 
+      # 5. Generate Android configuration if missing
       - name: Generate Android folder if missing
         run: |
           if [ ! -d android ]; then
-            flutter create --platforms=android .
+            flutter create \
+              --project-name improve_android \
+              --org com.aakash \
+              --platforms=android .
           fi
 
+      # 6. Install dependencies
       - name: Install dependencies
         run: flutter pub get
 
+      # 7. Check Dart code
+      - name: Analyze project
+        run: flutter analyze
+
+      # 8. Build release APK
       - name: Build APK
         run: flutter build apk --release
 
+      # 9. Upload APK
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Improve-Android-APK
           path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
           
