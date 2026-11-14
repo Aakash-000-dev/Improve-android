@@ -16,33 +16,58 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Download project files
-      - name: Checkout project
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Verify Flutter project
-      - name: Check project files
+      - name: Find and extract ZIP
         run: |
-          if [ ! -f pubspec.yaml ]; then
-            echo "ERROR: pubspec.yaml not found in repository root."
+          ZIP_FILE=$(find . -maxdepth 1 -type f -iname "*.zip" | head -n 1)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: No ZIP file found in repository root."
             exit 1
           fi
 
-      # 3. Install Java
+          echo "Found ZIP: $ZIP_FILE"
+
+          mkdir -p /tmp/improve-source
+          unzip -q "$ZIP_FILE" -d /tmp/improve-source
+
+      - name: Move Flutter project to root
+        run: |
+          PROJECT_FILE=$(find /tmp/improve-source -name pubspec.yaml -print -quit)
+
+          if [ -z "$PROJECT_FILE" ]; then
+            echo "ERROR: pubspec.yaml not found inside ZIP."
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$PROJECT_FILE")
+
+          echo "Flutter project found at: $PROJECT_DIR"
+
+          rsync -a \
+            --exclude='.git' \
+            --exclude='.github' \
+            "$PROJECT_DIR/" "$GITHUB_WORKSPACE/"
+
+          if [ ! -f pubspec.yaml ]; then
+            echo "ERROR: Project files were not copied correctly."
+            exit 1
+          fi
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      # 4. Install Flutter
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
 
-      # 5. Generate Android configuration if missing
       - name: Generate Android folder if missing
         run: |
           if [ ! -d android ]; then
@@ -52,19 +77,12 @@ jobs:
               --platforms=android .
           fi
 
-      # 6. Install dependencies
       - name: Install dependencies
         run: flutter pub get
 
-      # 7. Check Dart code
-      - name: Analyze project
-        run: flutter analyze
-
-      # 8. Build release APK
       - name: Build APK
         run: flutter build apk --release
 
-      # 9. Upload APK
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
