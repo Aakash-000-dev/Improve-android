@@ -6,7 +6,9 @@ on:
   push:
     branches:
       - main
-
+    paths:
+      - '**'
+      
 permissions:
   contents: read
 
@@ -16,77 +18,136 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1. Download repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 2. Find and extract uploaded source ZIP
       - name: Find and extract ZIP
         run: |
-          ZIP_FILE=$(find . -maxdepth 1 -type f -iname "*.zip" | head -n 1)
+          ZIP_FILE=$(find . -maxdepth 3 -type f -iname "*.zip" | head -n 1)
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: No ZIP file found in repository root."
+            echo "ERROR: No source ZIP found."
             exit 1
           fi
 
-          echo "Found ZIP: $ZIP_FILE"
-
+          echo "Extracting: $ZIP_FILE"
           mkdir -p /tmp/improve-source
-          unzip -q "$ZIP_FILE" -d /tmp/improve-source
+          unzip -o "$ZIP_FILE" -d /tmp/improve-source
 
+      # 3. Move Flutter project to repository root
       - name: Move Flutter project to root
         run: |
-          PROJECT_FILE=$(find /tmp/improve-source -name pubspec.yaml -print -quit)
+          PROJECT_DIR=$(find /tmp/improve-source -name pubspec.yaml -printf '%h\n' | head -n 1)
 
-          if [ -z "$PROJECT_FILE" ]; then
-            echo "ERROR: pubspec.yaml not found inside ZIP."
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: pubspec.yaml not found in ZIP."
             exit 1
           fi
 
-          PROJECT_DIR=$(dirname "$PROJECT_FILE")
+          cp -a "$PROJECT_DIR"/. .
 
-          echo "Flutter project found at: $PROJECT_DIR"
-
-          rsync -a \
-            --exclude='.git' \
-            --exclude='.github' \
-            "$PROJECT_DIR/" "$GITHUB_WORKSPACE/"
-
-          if [ ! -f pubspec.yaml ]; then
-            echo "ERROR: Project files were not copied correctly."
-            exit 1
-          fi
-
+      # 4. Setup Java
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
+      # 5. Setup Flutter
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
 
+      # 6. Generate a complete Android project
       - name: Generate Android folder if missing
         run: |
           if [ ! -f android/gradlew ] || [ ! -f android/app/src/main/AndroidManifest.xml ]; then
-          rm -rf android
-          flutter create --platforms=android --org com.aakash .
-            
-            fi
+            echo "Generating a fresh Android project..."
+            rm -rf android
+            flutter create --platforms=android --org com.aakash --project-name improve .
+          fi
 
+      # 7. Enable Core Library Desugaring
+      - name: Enable Android core library desugaring
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          candidates = [
+              Path("android/app/build.gradle.kts"),
+              Path("android/app/build.gradle")
+          ]
+
+          gradle = next((p for p in candidates if p.exists()), None)
+
+          if gradle is None:
+              raise SystemExit("ERROR: Android app Gradle file not found.")
+
+          text = gradle.read_text()
+          kotlin = gradle.name.endswith(".kts")
+
+          if "isCoreLibraryDesugaringEnabled" not in text and "coreLibraryDesugaringEnabled" not in text:
+              pattern = r"compileOptions\s*\{"
+              replacement = (
+                  "compileOptions {\n"
+                  "        isCoreLibraryDesugaringEnabled = true"
+                  if kotlin else
+                  "compileOptions {\n"
+                  "        coreLibraryDesugaringEnabled true"
+              )
+              text, count = re.subn(pattern, replacement, text, count=1)
+              if count == 0:
+                  raise SystemExit("ERROR: compileOptions block not found.")
+
+          if "desugar_jdk_libs" not in text:
+              dependency = (
+                  '    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")'
+                  if kotlin else
+                  "    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.4'"
+              )
+
+              match = re.search(r"dependencies\s*\{", text)
+              if match:
+                  pos = match.end()
+                  text = text[:pos] + "\n" + dependency + text[pos:]
+              else:
+                  text += "\n\ndependencies {\n" + dependency + "\n}\n"
+
+          gradle.write_text(text)
+          print("Desugaring enabled in", gradle)
+          PY
+
+      # 8. Install Flutter dependencies
       - name: Install dependencies
         run: flutter pub get
 
+      # 9. Generate launcher icons
+      - name: Generate app icon
+        run: dart run flutter_launcher_icons
+
+      # 10. Check Dart source
+      - name: Analyze Flutter project
+        run: flutter analyze --no-fatal-infos
+
+      # 11. Build release APK
       - name: Build APK
         run: flutter build apk --release
 
+      # 12. Rename APK
+      - name: Rename APK
+        run: |
+          cp build/app/outputs/flutter-apk/app-release.apk Improve.apk
+
+      # 13. Upload APK
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Improve-Android-APK
-          path: build/app/outputs/flutter-apk/app-release.apk
+          name: Improve-Android
+          path: Improve.apk
           if-no-files-found: error
-          retention-days: 14
           
