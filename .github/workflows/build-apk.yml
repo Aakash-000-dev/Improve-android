@@ -6,9 +6,7 @@ on:
   push:
     branches:
       - main
-    paths:
-      - '**'
-      
+
 permissions:
   contents: read
 
@@ -18,11 +16,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Download repository
+      # 1. Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Find and extract uploaded source ZIP
+      # 2. Find and extract source ZIP
       - name: Find and extract ZIP
         run: |
           ZIP_FILE=$(find . -maxdepth 3 -type f -iname "*.zip" | head -n 1)
@@ -32,17 +30,18 @@ jobs:
             exit 1
           fi
 
-          echo "Extracting: $ZIP_FILE"
+          echo "Extracting $ZIP_FILE"
+
           mkdir -p /tmp/improve-source
           unzip -o "$ZIP_FILE" -d /tmp/improve-source
 
-      # 3. Move Flutter project to repository root
+      # 3. Move Flutter project to root
       - name: Move Flutter project to root
         run: |
           PROJECT_DIR=$(find /tmp/improve-source -name pubspec.yaml -printf '%h\n' | head -n 1)
 
           if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: pubspec.yaml not found in ZIP."
+            echo "ERROR: pubspec.yaml not found."
             exit 1
           fi
 
@@ -62,16 +61,46 @@ jobs:
           channel: stable
           cache: true
 
-      # 6. Generate a complete Android project
+      # 6. Generate complete Android project if missing
       - name: Generate Android folder if missing
         run: |
           if [ ! -f android/gradlew ] || [ ! -f android/app/src/main/AndroidManifest.xml ]; then
-            echo "Generating a fresh Android project..."
+            echo "Generating Android project..."
+
             rm -rf android
-            flutter create --platforms=android --org com.aakash --project-name improve .
+
+            flutter create \
+              --platforms=android \
+              --org com.aakash \
+              --project-name improve .
           fi
 
-      # 7. Enable Core Library Desugaring
+      # 7. Configure Android app name
+      - name: Configure app name
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          manifest = Path("android/app/src/main/AndroidManifest.xml")
+
+          if not manifest.exists():
+              raise SystemExit("AndroidManifest.xml not found")
+
+          text = manifest.read_text()
+
+          text = re.sub(
+              r'android:label="[^"]*"',
+              'android:label="Improve"',
+              text,
+              count=1
+          )
+
+          manifest.write_text(text)
+          print("App name configured: Improve")
+          PY
+
+      # 8. Enable Android Core Library Desugaring
       - name: Enable Android core library desugaring
         run: |
           python3 <<'PY'
@@ -86,23 +115,29 @@ jobs:
           gradle = next((p for p in candidates if p.exists()), None)
 
           if gradle is None:
-              raise SystemExit("ERROR: Android app Gradle file not found.")
+              raise SystemExit("Android app Gradle file not found")
 
           text = gradle.read_text()
           kotlin = gradle.name.endswith(".kts")
 
           if "isCoreLibraryDesugaringEnabled" not in text and "coreLibraryDesugaringEnabled" not in text:
               pattern = r"compileOptions\s*\{"
-              replacement = (
-                  "compileOptions {\n"
-                  "        isCoreLibraryDesugaringEnabled = true"
+
+              setting = (
+                  "\n        isCoreLibraryDesugaringEnabled = true"
                   if kotlin else
-                  "compileOptions {\n"
-                  "        coreLibraryDesugaringEnabled true"
+                  "\n        coreLibraryDesugaringEnabled true"
               )
-              text, count = re.subn(pattern, replacement, text, count=1)
+
+              text, count = re.subn(
+                  pattern,
+                  lambda match: match.group(0) + setting,
+                  text,
+                  count=1
+              )
+
               if count == 0:
-                  raise SystemExit("ERROR: compileOptions block not found.")
+                  raise SystemExit("compileOptions block not found")
 
           if "desugar_jdk_libs" not in text:
               dependency = (
@@ -112,38 +147,48 @@ jobs:
               )
 
               match = re.search(r"dependencies\s*\{", text)
+
               if match:
-                  pos = match.end()
-                  text = text[:pos] + "\n" + dependency + text[pos:]
+                  position = match.end()
+                  text = text[:position] + "\n" + dependency + text[position:]
               else:
-                  text += "\n\ndependencies {\n" + dependency + "\n}\n"
+                  raise SystemExit("dependencies block not found")
 
           gradle.write_text(text)
-          print("Desugaring enabled in", gradle)
+
+          print("Core library desugaring enabled")
           PY
 
-      # 8. Install Flutter dependencies
+      # 9. Install dependencies
       - name: Install dependencies
         run: flutter pub get
 
-      # 9. Generate launcher icons
+      # 10. Generate launcher icon
       - name: Generate app icon
         run: dart run flutter_launcher_icons
 
-      # 10. Check Dart source
+      # 11. Remove obsolete generated template test
+      - name: Remove obsolete widget test
+        run: |
+          if [ -f test/widget_test.dart ]; then
+            rm test/widget_test.dart
+            echo "Removed obsolete template widget test."
+          fi
+
+      # 12. Analyze Flutter project
       - name: Analyze Flutter project
         run: flutter analyze --no-fatal-infos
 
-      # 11. Build release APK
+      # 13. Build release APK
       - name: Build APK
         run: flutter build apk --release
 
-      # 12. Rename APK
+      # 14. Rename APK
       - name: Rename APK
         run: |
           cp build/app/outputs/flutter-apk/app-release.apk Improve.apk
 
-      # 13. Upload APK
+      # 15. Upload APK
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
