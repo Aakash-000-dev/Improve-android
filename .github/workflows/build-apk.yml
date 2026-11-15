@@ -70,12 +70,11 @@ jobs:
 
       - name: Generate Android folder if missing
         run: |
-          if [ ! -d android ]; then
-            flutter create \
-              --project-name improve_android \
-              --org com.aakash \
-              --platforms=android .
-          fi
+          if [ ! -f android/gradlew ] || [ ! -f android/app/src/main/AndroidManifest.xml ]; then
+          rm -rf android
+          flutter create --platforms=android --org com.aakash .
+            
+            fi
 
       - name: Install dependencies
         run: flutter pub get
