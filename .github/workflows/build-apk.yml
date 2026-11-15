@@ -100,6 +100,7 @@ jobs:
           print("App name configured: Improve")
           PY
 
+      
       # 8. Enable Android Core Library Desugaring
       - name: Enable Android core library desugaring
         run: |
@@ -115,30 +116,32 @@ jobs:
           gradle = next((p for p in candidates if p.exists()), None)
 
           if gradle is None:
-              raise SystemExit("Android app Gradle file not found")
+              raise SystemExit("ERROR: App Gradle file not found.")
 
           text = gradle.read_text()
           kotlin = gradle.name.endswith(".kts")
 
+          # Enable desugaring inside compileOptions
           if "isCoreLibraryDesugaringEnabled" not in text and "coreLibraryDesugaringEnabled" not in text:
               pattern = r"compileOptions\s*\{"
 
               setting = (
-                  "\n        isCoreLibraryDesugaringEnabled = true"
+                  "\n    isCoreLibraryDesugaringEnabled = true"
                   if kotlin else
-                  "\n        coreLibraryDesugaringEnabled true"
+                  "\n    coreLibraryDesugaringEnabled true"
               )
 
               text, count = re.subn(
                   pattern,
-                  lambda match: match.group(0) + setting,
+                  lambda m: m.group(0) + setting,
                   text,
                   count=1
               )
 
               if count == 0:
-                  raise SystemExit("compileOptions block not found")
+                  raise SystemExit("ERROR: compileOptions block not found.")
 
+          # Add the desugaring dependency
           if "desugar_jdk_libs" not in text:
               dependency = (
                   '    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")'
@@ -152,8 +155,15 @@ jobs:
                   position = match.end()
                   text = text[:position] + "\n" + dependency + text[position:]
               else:
-                  raise SystemExit("dependencies block not found")
+                  # Create a dependencies block if missing
+                  text += "\n\ndependencies {\n" + dependency + "\n}\n"
 
+          gradle.write_text(text)
+
+          print("Core library desugaring configured successfully.")
+          print("Gradle file:", gradle)
+          PY
+          
           gradle.write_text(text)
 
           print("Core library desugaring enabled")
