@@ -249,6 +249,63 @@ jobs:
       - name: Get Flutter dependencies
         run: flutter pub get
 
+        
+      - name: Fix Android SDK version for plugins
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import os
+
+          pub_cache = Path.home() / ".pub-cache"
+
+          plugins = [
+              pub_cache / "hosted" / "pub.dev"
+          ]
+
+          updated = []
+
+          for base in plugins:
+              if not base.exists():
+                  continue
+
+              for gradle in list(base.glob("*/android/build.gradle")) + \
+                            list(base.glob("*/android/build.gradle.kts")):
+
+                  text = gradle.read_text()
+                  original = text
+
+                  text = re.sub(
+                      r'(?m)^(\s*compileSdkVersion\s+)(?:flutter\.compileSdkVersion|\d+)',
+                      r'\g<1>36',
+                      text
+                  )
+
+                  text = re.sub(
+                      r'(?m)^(\s*compileSdk\s*=\s*)(?:flutter\.compileSdkVersion|\d+)',
+                      r'\g<1>36',
+                      text
+                  )
+
+                  text = re.sub(
+                      r'(?m)^(\s*compileSdk\s+)(?:flutter\.compileSdkVersion|\d+)',
+                      r'\g<1>36',
+                      text
+                  )
+
+                  if text != original:
+                      gradle.write_text(text)
+                      updated.append(str(gradle))
+
+          print("Updated plugin Gradle files:")
+          for item in updated:
+              print(item)
+
+          print(f"Total updated: {len(updated)}")
+          PY
+          
+
       # 10. Generate launcher icon
       - name: Generate app icon
         run: dart run flutter_launcher_icons
