@@ -66,11 +66,16 @@ jobs:
       # 5. Install Android SDK 36
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          packages: |
-            platform-tools
-            platforms;android-36
-            build-tools;36.0.0
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0"
+
+          yes | sdkmanager --licenses
 
       # 6. Generate complete Android project if missing
       - name: Prepare Android project
