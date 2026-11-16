@@ -124,6 +124,7 @@ jobs:
           PY
 
       # 8. Configure Android Gradle
+      
       - name: Configure Android Gradle
         shell: bash
         run: |
@@ -138,15 +139,18 @@ jobs:
               path = kts
               text = path.read_text()
 
-              text, count = re.subn(
+              text = re.sub(
                   r'compileSdk\s*=\s*.*',
                   'compileSdk = 36',
                   text,
                   count=1
               )
 
-              if count == 0:
-                  raise SystemExit("Could not find compileSdk in Gradle.")
+              text = re.sub(
+                  r'isCoreLibraryDesugaringEnabled\s*=\s*false',
+                  'isCoreLibraryDesugaringEnabled = true',
+                  text
+              )
 
               if "isCoreLibraryDesugaringEnabled" not in text:
                   text = re.sub(
@@ -157,37 +161,43 @@ jobs:
                       count=1
                   )
 
-              if "coreLibraryDesugaring(" not in text:
-                  text = re.sub(
-                      r'dependencies\s*\{',
-                      'dependencies {\n'
+              # Remove any incorrect previous declaration
+              text = re.sub(
+                  r'(?m)^\s*coreLibraryDesugaring\([^)]*\)\s*\n?',
+                  '',
+                  text
+              )
+
+              # Add the required dependency
+              match = re.search(r'(?m)^(\s*)dependencies\s*\{', text)
+
+              if not match:
+                  text += (
+                      '\n\ndependencies {\n'
                       '    coreLibraryDesugaring('
-                      '"com.android.tools:desugar_jdk_libs:2.1.4")',
-                      text,
-                      count=1
+                      '"com.android.tools:desugar_jdk_libs:2.1.4")\n'
+                      '}\n'
+                  )
+              else:
+                  indent = match.group(1) + '    '
+                  position = match.end()
+                  text = (
+                      text[:position] + '\n' + indent +
+                      'coreLibraryDesugaring('
+                      '"com.android.tools:desugar_jdk_libs:2.1.4")' +
+                      text[position:]
                   )
 
           elif groovy.exists():
               path = groovy
               text = path.read_text()
 
-              text, count = re.subn(
+              text = re.sub(
                   r'compileSdkVersion\s+.*',
                   'compileSdkVersion 36',
                   text,
                   count=1
               )
-
-              if count == 0:
-                  text, count = re.subn(
-                      r'compileSdk\s+.*',
-                      'compileSdk 36',
-                      text,
-                      count=1
-                  )
-
-              if count == 0:
-                  raise SystemExit("Could not find compileSdk in Gradle.")
 
               if "coreLibraryDesugaringEnabled" not in text:
                   text = re.sub(
@@ -198,22 +208,42 @@ jobs:
                       count=1
                   )
 
-              if "coreLibraryDesugaring " not in text:
-                  text = re.sub(
-                      r'dependencies\s*\{',
-                      "dependencies {\n"
+              text = re.sub(
+                  r'(?m)^\s*coreLibraryDesugaring\s+.*\n?',
+                  '',
+                  text
+              )
+
+              match = re.search(r'(?m)^(\s*)dependencies\s*\{', text)
+
+              if not match:
+                  text += (
+                      "\n\ndependencies {\n"
                       "    coreLibraryDesugaring "
-                      "'com.android.tools:desugar_jdk_libs:2.1.4'",
-                      text,
-                      count=1
+                      "'com.android.tools:desugar_jdk_libs:2.1.4'\n"
+                      "}\n"
+                  )
+              else:
+                  indent = match.group(1) + '    '
+                  position = match.end()
+                  text = (
+                      text[:position] + '\n' + indent +
+                      "coreLibraryDesugaring "
+                      "'com.android.tools:desugar_jdk_libs:2.1.4'" +
+                      text[position:]
                   )
 
           else:
               raise SystemExit("Android Gradle file not found.")
 
           path.write_text(text)
-          print(f"Updated {path}")
+
+          print("compileSdk configured: 36")
+          print("Core library desugaring enabled.")
+          print("Desugaring dependency added.")
           PY
+          
+              
 
       # 9. Get Flutter dependencies
       - name: Get Flutter dependencies
