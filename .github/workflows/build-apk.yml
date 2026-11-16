@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Download repository
+      # 1. Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -47,7 +47,7 @@ jobs:
           PROJECT_DIR=$(dirname "$PUBSPEC")
           cp -a "$PROJECT_DIR/." .
 
-          echo "Flutter project extracted successfully."
+          echo "Source extracted successfully."
 
       # 3. Install Java
       - name: Set up Java
@@ -63,35 +63,33 @@ jobs:
           channel: stable
           cache: true
 
-      # 5. Install Android SDK 36
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      
-      - name: Install Android SDK packages
+      # 5. Verify preinstalled Android SDK
+      - name: Verify Android SDK
         shell: bash
         run: |
-          echo "Android SDK: $ANDROID_HOME"
-          echo "Checking sdkmanager..."
+          echo "ANDROID_HOME: $ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT: $ANDROID_SDK_ROOT"
 
-          command -v sdkmanager
+          if [ -z "$ANDROID_HOME" ]; then
+            echo "Android SDK environment variable not found."
+            exit 1
+          fi
 
-          sdkmanager --sdk_root="$ANDROID_HOME" --install \
-            "platform-tools" \
-            "platforms;android-36" \
-            "build-tools;36.0.0"
+          if [ ! -d "$ANDROID_HOME/platforms/android-36" ]; then
+            echo "Android API 36 is not installed on this runner."
+            echo "Available platforms:"
+            ls "$ANDROID_HOME/platforms" || true
+            exit 1
+          fi
 
-          yes | sdkmanager --sdk_root="$ANDROID_HOME" --licenses
-          
+          echo "Android API 36 is available."
 
-      # 6. Generate complete Android project if missing
+      # 6. Generate Android project if missing
       - name: Prepare Android project
         shell: bash
         run: |
           if [ ! -f android/gradlew ] || \
              [ ! -f android/app/src/main/AndroidManifest.xml ]; then
-
-            echo "Generating Android project..."
 
             rm -rf android
 
@@ -106,13 +104,12 @@ jobs:
       - name: Configure application name
         shell: bash
         run: |
-          MANIFEST="android/app/src/main/AndroidManifest.xml"
-
           python3 - <<'PY'
           from pathlib import Path
           import re
 
           path = Path("android/app/src/main/AndroidManifest.xml")
+
           text = path.read_text()
 
           text = re.sub(
@@ -123,18 +120,10 @@ jobs:
           )
 
           path.write_text(text)
-          print("Application name configured.")
+          print("App name configured.")
           PY
 
-          mkdir -p android/app/src/main/res/values
-
-          cat > android/app/src/main/res/values/strings.xml <<'EOF'
-          <resources>
-              <string name="app_name">Improve</string>
-          </resources>
-          EOF
-
-      # 8. Configure Android compile SDK and desugaring
+      # 8. Configure Android Gradle
       - name: Configure Android Gradle
         shell: bash
         run: |
@@ -149,17 +138,15 @@ jobs:
               path = kts
               text = path.read_text()
 
-              text = re.sub(
-                  r'compileSdk\s*=\s*flutter\.compileSdkVersion',
+              text, count = re.subn(
+                  r'compileSdk\s*=\s*.*',
                   'compileSdk = 36',
-                  text
+                  text,
+                  count=1
               )
 
-              text = re.sub(
-                  r'compileSdkVersion\s*\(?\s*flutter\.compileSdkVersion\s*\)?',
-                  'compileSdk = 36',
-                  text
-              )
+              if count == 0:
+                  raise SystemExit("Could not find compileSdk in Gradle.")
 
               if "isCoreLibraryDesugaringEnabled" not in text:
                   text = re.sub(
@@ -168,12 +155,6 @@ jobs:
                       '        isCoreLibraryDesugaringEnabled = true',
                       text,
                       count=1
-                  )
-              else:
-                  text = re.sub(
-                      r'isCoreLibraryDesugaringEnabled\s*=\s*false',
-                      'isCoreLibraryDesugaringEnabled = true',
-                      text
                   )
 
               if "coreLibraryDesugaring(" not in text:
@@ -190,17 +171,23 @@ jobs:
               path = groovy
               text = path.read_text()
 
-              text = re.sub(
-                  r'compileSdkVersion\s+flutter\.compileSdkVersion',
+              text, count = re.subn(
+                  r'compileSdkVersion\s+.*',
                   'compileSdkVersion 36',
-                  text
+                  text,
+                  count=1
               )
 
-              text = re.sub(
-                  r'compileSdk\s+flutter\.compileSdkVersion',
-                  'compileSdk 36',
-                  text
-              )
+              if count == 0:
+                  text, count = re.subn(
+                      r'compileSdk\s+.*',
+                      'compileSdk 36',
+                      text,
+                      count=1
+                  )
+
+              if count == 0:
+                  raise SystemExit("Could not find compileSdk in Gradle.")
 
               if "coreLibraryDesugaringEnabled" not in text:
                   text = re.sub(
@@ -220,17 +207,15 @@ jobs:
                       text,
                       count=1
                   )
-          else:
-              raise SystemExit("Android app Gradle file not found.")
 
-          if "36" not in text:
-              raise SystemExit("Could not configure compileSdk 36.")
+          else:
+              raise SystemExit("Android Gradle file not found.")
 
           path.write_text(text)
-          print(f"Configured {path} for Android SDK 36.")
+          print(f"Updated {path}")
           PY
 
-      # 9. Install Flutter dependencies
+      # 9. Get Flutter dependencies
       - name: Get Flutter dependencies
         run: flutter pub get
 
@@ -238,11 +223,11 @@ jobs:
       - name: Generate app icon
         run: dart run flutter_launcher_icons
 
-      # 11. Remove obsolete default test
+      # 11. Remove default widget test
       - name: Remove obsolete widget test
         run: rm -f test/widget_test.dart
 
-      # 12. Analyze project
+      # 12. Analyze Flutter project
       - name: Analyze Flutter project
         run: flutter analyze --no-fatal-infos
 
@@ -252,7 +237,8 @@ jobs:
 
       # 14. Rename APK
       - name: Rename APK
-        run: cp build/app/outputs/flutter-apk/app-release.apk Improve.apk
+        run: |
+          cp build/app/outputs/flutter-apk/app-release.apk Improve.apk
 
       # 15. Upload APK
       - name: Upload APK
