@@ -1,14 +1,12 @@
 
-name: Build Improve APK
+name: Build Android APK
 
 on:
   workflow_dispatch:
   push:
     branches:
       - main
-
-permissions:
-  contents: read
+      - master
 
 jobs:
   build:
@@ -16,187 +14,230 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout repository
+      # 1. Download repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Find and extract the latest source ZIP
-      - name: Find and extract ZIP
+      # 2. Find and extract latest source ZIP
+      - name: Extract Improve source
         shell: bash
         run: |
           ZIP_FILE=$(find . -maxdepth 4 -type f -iname "*.zip" \
+            ! -path "./.git/*" \
             -printf '%T@ %p\n' | sort -nr | head -n 1 | cut -d' ' -f2-)
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: No source ZIP found."
+            echo "No source ZIP found!"
             exit 1
           fi
 
           echo "Using source: $ZIP_FILE"
 
-          mkdir -p /tmp/improve-source
-          unzip -o "$ZIP_FILE" -d /tmp/improve-source
+          mkdir -p _source
+          unzip -q "$ZIP_FILE" -d _source
 
-      # 3. Move Flutter project to repository root
-      - name: Move Flutter project to root
-        shell: bash
-        run: |
-          PROJECT_DIR=$(find /tmp/improve-source \
-            -name pubspec.yaml -printf '%h\n' | head -n 1)
+          PUBSPEC=$(find _source -name pubspec.yaml \
+            -not -path '*/.dart_tool/*' -print -quit)
 
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: pubspec.yaml not found in ZIP."
+          if [ -z "$PUBSPEC" ]; then
+            echo "pubspec.yaml not found!"
             exit 1
           fi
 
-          echo "Flutter project: $PROJECT_DIR"
-          cp -a "$PROJECT_DIR"/. .
+          PROJECT_DIR=$(dirname "$PUBSPEC")
+          cp -a "$PROJECT_DIR/." .
 
-      # 4. Setup Java
-      - name: Setup Java
+          echo "Flutter project extracted successfully."
+
+      # 3. Install Java
+      - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      # 5. Setup Flutter
-      - name: Setup Flutter
+      # 4. Install Flutter
+      - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
 
-      # 6. Generate Android project if incomplete
-      - name: Generate Android folder if missing
+      # 5. Install Android SDK 36
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools, platforms;android-36, build-tools;36.0.0'
+
+      # 6. Generate complete Android project if missing
+      - name: Prepare Android project
         shell: bash
         run: |
           if [ ! -f android/gradlew ] || \
              [ ! -f android/app/src/main/AndroidManifest.xml ]; then
 
-            echo "Generating a fresh Android project..."
+            echo "Generating Android project..."
 
             rm -rf android
 
             flutter create \
               --platforms=android \
               --org com.aakash \
-              --project-name improve .
-          else
-            echo "Existing Android project found."
+              --project-name improve \
+              .
           fi
 
-      # 7. Configure installed app name
-      - name: Configure app name
+      # 7. Configure app name
+      - name: Configure application name
         shell: bash
         run: |
           MANIFEST="android/app/src/main/AndroidManifest.xml"
 
-          if [ ! -f "$MANIFEST" ]; then
-            echo "ERROR: AndroidManifest.xml not found."
-            exit 1
-          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
 
-          sed -i 's/android:label="[^"]*"/android:label="Improve"/' "$MANIFEST"
+          path = Path("android/app/src/main/AndroidManifest.xml")
+          text = path.read_text()
 
-          echo "Application name set to Improve."
+          text = re.sub(
+              r'android:label="[^"]*"',
+              'android:label="Improve"',
+              text,
+              count=1
+          )
 
-      # 8. Enable Android Core Library Desugaring
-      - name: Enable Android core library desugaring
+          path.write_text(text)
+          print("Application name configured.")
+          PY
+
+          mkdir -p android/app/src/main/res/values
+
+          cat > android/app/src/main/res/values/strings.xml <<'EOF'
+          <resources>
+              <string name="app_name">Improve</string>
+          </resources>
+          EOF
+
+      # 8. Configure Android compile SDK and desugaring
+      - name: Configure Android Gradle
         shell: bash
         run: |
-          KTS="android/app/build.gradle.kts"
-          GROOVY="android/app/build.gradle"
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
 
-          if [ -f "$KTS" ]; then
-            FILE="$KTS"
-            TYPE="kotlin"
-          elif [ -f "$GROOVY" ]; then
-            FILE="$GROOVY"
-            TYPE="groovy"
-          else
-            echo "ERROR: App Gradle file not found."
-            exit 1
-          fi
+          kts = Path("android/app/build.gradle.kts")
+          groovy = Path("android/app/build.gradle")
 
-          echo "Configuring $FILE"
+          if kts.exists():
+              path = kts
+              text = path.read_text()
 
-          if [ "$TYPE" = "kotlin" ]; then
+              text = re.sub(
+                  r'compileSdk\s*=\s*flutter\.compileSdkVersion',
+                  'compileSdk = 36',
+                  text
+              )
 
-            if ! grep -q 'compileOptions {' "$FILE"; then
-              echo "ERROR: compileOptions block not found."
-              exit 1
-            fi
+              text = re.sub(
+                  r'compileSdkVersion\s*\(?\s*flutter\.compileSdkVersion\s*\)?',
+                  'compileSdk = 36',
+                  text
+              )
 
-            if ! grep -q 'isCoreLibraryDesugaringEnabled' "$FILE"; then
-              sed -i '/compileOptions {/a\        isCoreLibraryDesugaringEnabled = true' "$FILE"
-            fi
+              if "isCoreLibraryDesugaringEnabled" not in text:
+                  text = re.sub(
+                      r'compileOptions\s*\{',
+                      'compileOptions {\n'
+                      '        isCoreLibraryDesugaringEnabled = true',
+                      text,
+                      count=1
+                  )
+              else:
+                  text = re.sub(
+                      r'isCoreLibraryDesugaringEnabled\s*=\s*false',
+                      'isCoreLibraryDesugaringEnabled = true',
+                      text
+                  )
 
-            if ! grep -q 'desugar_jdk_libs' "$FILE"; then
-              printf '\n\ndependencies {\n    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")\n}\n' >> "$FILE"
-            fi
+              if "coreLibraryDesugaring(" not in text:
+                  text = re.sub(
+                      r'dependencies\s*\{',
+                      'dependencies {\n'
+                      '    coreLibraryDesugaring('
+                      '"com.android.tools:desugar_jdk_libs:2.1.4")',
+                      text,
+                      count=1
+                  )
 
-          else
+          elif groovy.exists():
+              path = groovy
+              text = path.read_text()
 
-            if ! grep -q 'compileOptions {' "$FILE"; then
-              echo "ERROR: compileOptions block not found."
-              exit 1
-            fi
+              text = re.sub(
+                  r'compileSdkVersion\s+flutter\.compileSdkVersion',
+                  'compileSdkVersion 36',
+                  text
+              )
 
-            if ! grep -q 'coreLibraryDesugaringEnabled' "$FILE"; then
-              sed -i '/compileOptions {/a\        coreLibraryDesugaringEnabled true' "$FILE"
-            fi
+              text = re.sub(
+                  r'compileSdk\s+flutter\.compileSdkVersion',
+                  'compileSdk 36',
+                  text
+              )
 
-            if ! grep -q 'desugar_jdk_libs' "$FILE"; then
-              printf '\n\ndependencies {\n    coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.1.4"\n}\n' >> "$FILE"
-            fi
+              if "coreLibraryDesugaringEnabled" not in text:
+                  text = re.sub(
+                      r'compileOptions\s*\{',
+                      'compileOptions {\n'
+                      '        coreLibraryDesugaringEnabled true',
+                      text,
+                      count=1
+                  )
 
-          fi
+              if "coreLibraryDesugaring " not in text:
+                  text = re.sub(
+                      r'dependencies\s*\{',
+                      "dependencies {\n"
+                      "    coreLibraryDesugaring "
+                      "'com.android.tools:desugar_jdk_libs:2.1.4'",
+                      text,
+                      count=1
+                  )
+          else:
+              raise SystemExit("Android app Gradle file not found.")
 
-          echo "Core library desugaring configured."
-          grep -n -E 'compileOptions|CoreLibraryDesugaring|desugar_jdk_libs' "$FILE"
+          if "36" not in text:
+              raise SystemExit("Could not configure compileSdk 36.")
 
-      # 9. Install dependencies
-      - name: Install dependencies
+          path.write_text(text)
+          print(f"Configured {path} for Android SDK 36.")
+          PY
+
+      # 9. Install Flutter dependencies
+      - name: Get Flutter dependencies
         run: flutter pub get
 
       # 10. Generate launcher icon
       - name: Generate app icon
-        run: |
-          if [ ! -f assets/icon/app_icon.png ]; then
-            echo "ERROR: App icon not found at assets/icon/app_icon.png"
-            exit 1
-          fi
+        run: dart run flutter_launcher_icons
 
-          dart run flutter_launcher_icons
-
-      # 11. Remove obsolete template widget test
+      # 11. Remove obsolete default test
       - name: Remove obsolete widget test
-        shell: bash
-        run: |
-          if [ -f test/widget_test.dart ]; then
-            rm test/widget_test.dart
-            echo "Removed obsolete widget test."
-          fi
+        run: rm -f test/widget_test.dart
 
-      # 12. Analyze Flutter project
+      # 12. Analyze project
       - name: Analyze Flutter project
         run: flutter analyze --no-fatal-infos
 
-      # 13. Build release APK
+      # 13. Build APK
       - name: Build APK
         run: flutter build apk --release
 
       # 14. Rename APK
       - name: Rename APK
-        run: |
-          SOURCE="build/app/outputs/flutter-apk/app-release.apk"
-
-          if [ ! -f "$SOURCE" ]; then
-            echo "ERROR: APK was not generated."
-            exit 1
-          fi
-
-          cp "$SOURCE" Improve.apk
+        run: cp build/app/outputs/flutter-apk/app-release.apk Improve.apk
 
       # 15. Upload APK
       - name: Upload APK
