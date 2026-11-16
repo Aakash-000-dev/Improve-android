@@ -180,9 +180,7 @@ jobs:
 
       # 12. Analyze Flutter project
       - name: Analyze Flutter project
-        run: flutter analyze
-               
-               --no-fatal-infos
+        run: flutter analyze --no-fatal-infos
 
       # 13. Build release APK
       - name: Build APK
